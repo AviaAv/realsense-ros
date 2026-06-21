@@ -922,41 +922,52 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     if(!_occupancy_publisher || 0 == _occupancy_publisher->get_subscription_count())
         return;
 
-    ROS_DEBUG("Publishing Occupancy GridCells Frame");
+    ROS_DEBUG("Publishing Occupancy Grid Frame");
 
-    // get frame bytes and frame metadata relevant info
     auto frame_as_uint8_arr = (uint8_t*)f.get_data();
-    auto cols = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_COLUMNS)); // grid cells width
-    auto rows = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_ROWS)); // grid cells height
-    auto cell_size = static_cast<float>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_CELL_SIZE) / 100.0f); // convert to meters
+    auto cols = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_COLUMNS));
+    auto rows = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_ROWS));
+    auto cell_size = static_cast<float>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_CELL_SIZE) / 100.0f); // cm -> m
 
-    // create GridCells msg and start filling it
-    nav_msgs::msg::GridCells msg;
+    nav_msgs::msg::OccupancyGrid msg;
     msg.header.stamp = t;
     msg.header.frame_id = FRAME_ID(OCCUPANCY);
-    msg.cell_width = cell_size;
-    msg.cell_height = cell_size;
+
+    // Grid metadata — self-describing so subscribers need no out-of-band knowledge.
+    // Axes follow ROS convention (X: Forward, Y: Left):
+    //   width  = cells along X (forward) = rows in firmware
+    //   height = cells along Y (left)    = cols in firmware
+    // Origin is the lower-left corner of cell (width-1, 0) in map frame:
+    //   origin.x = 0           (nearest boundary, X direction)
+    //   origin.y = -resolution * height / 2  (rightmost boundary, Y direction)
+    msg.info.map_load_time = t;
+    msg.info.resolution = cell_size;
+    msg.info.width  = static_cast<uint32_t>(rows);
+    msg.info.height = static_cast<uint32_t>(cols);
+    msg.info.origin.position.x = 0.0;
+    msg.info.origin.position.y = -cell_size * static_cast<float>(cols) / 2.0f;
+    msg.info.origin.position.z = 0.0;
+    msg.info.origin.orientation.w = 1.0;
+
+    // data[row_idx * width + col_idx], 0 = free, 100 = occupied.
+    // col_idx increases in +X (forward), row_idx increases in +Y (left).
+    // Firmware row 0 = farthest  → col_idx = width-1-fw_row
+    // Firmware col 0 = leftmost  → row_idx = height-1-fw_col
+    msg.data.assign(rows * cols, 0);
 
     for (auto i = 0; i < cols * rows; ++i)
     {
-        // AICV algo is packing each 8 cells into one byte. Each byte include 8 bits <--> 8 cells
-        // The rightest bit (LSB) inside the packed byte from AICV algo represnts the closest cell we want to work with in the grid.
-        // e.g. Original Occupancy Cells: 0 0 1 1 0 0 1 0 ---> AICV packing algo ---> 01001100 (not the opposite order)
-        // In this if we check if current cell is occupied.
-        // Note that we start working from the most left bit, aka, the farest point of the grid.
+        // AICV algo packs 8 cells per byte; bit i%8 of byte i/8 = cell i.
         if ((frame_as_uint8_arr[i / 8U] & (1U << i % 8)) != 0)
         {
-            // Find x,y,z positions of current index
-            // Remember, in ROS CS: (X: Forward, Y: Left, Z: Up)
-            geometry_msgs::msg::Point p3d;
-            uint32_t row = (i / cols);
-            uint32_t col = (i % cols);
-            p3d.x = (cell_size * static_cast<float>(rows)) - cell_size * (static_cast<float>(row) + 0.5f);
-            p3d.y = (cell_size * static_cast<float>(cols)) / 2 - cell_size * (static_cast<float>(col) + 0.5f);
-            p3d.z = 0;
-            msg.cells.push_back(p3d);
+            uint32_t fw_row = static_cast<uint32_t>(i / cols);
+            uint32_t fw_col = static_cast<uint32_t>(i % cols);
+            uint32_t og_col_idx = static_cast<uint32_t>(rows) - 1u - fw_row;
+            uint32_t og_row_idx = static_cast<uint32_t>(cols) - 1u - fw_col;
+            msg.data[og_row_idx * static_cast<uint32_t>(rows) + og_col_idx] = 100;
         }
     }
+
     _occupancy_publisher->publish(msg);
 }
 

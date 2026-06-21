@@ -47,7 +47,7 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
-#include <nav_msgs/msg/grid_cells.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 
 #if defined(HUMBLE) || defined(IRON) || defined(JAZZY) || defined(FOXY) 
 #include <tf2/LinearMath/Quaternion.h>
@@ -371,7 +371,7 @@ namespace realsense2_camera
         bool _use_intra_process;      
         std::map<stream_index_pair, std::shared_ptr<image_publisher>> _image_publishers;
         rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _labeled_pointcloud_publisher;
-        rclcpp::Publisher<nav_msgs::msg::GridCells>::SharedPtr _occupancy_publisher;
+        rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr _occupancy_publisher;
         std::map<stream_index_pair, rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr> _imu_publishers;
         std::shared_ptr<SyncedImuPublisher> _synced_imu_publisher;
         std::map<stream_index_pair, rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr> _info_publishers;
