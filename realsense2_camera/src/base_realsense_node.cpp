@@ -104,6 +104,7 @@ BaseRealSenseNode::BaseRealSenseNode(RosNodeBase& node,
     _json_file_path(""),
     _depth_scale_meters(0),
     _clipping_distance(0),
+    _occupancy_max_range(0),
     _linear_accel_cov(0),
     _angular_velocity_cov(0),
     _hold_back_imu_for_frames(false),
@@ -949,22 +950,104 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     msg.info.origin.position.z = 0.0;
     msg.info.origin.orientation.w = 1.0;
 
-    // data[row_idx * width + col_idx], 0 = free, 100 = occupied.
+    // data[row_idx * width + col_idx], 0 = free, 100 = occupied, -1 = unknown.
     // col_idx increases in +X (forward), row_idx increases in +Y (left).
     // Firmware row 0 = farthest  → col_idx = width-1-fw_row
     // Firmware col 0 = leftmost  → row_idx = height-1-fw_col
-    msg.data.assign(rows * cols, 0);
+    //
+    // True angular raycasting: cells are grouped by ray angle θ = atan2(y, x).
+    // Within each ray, cells are processed nearest→farthest:
+    //   free (0) up to the first obstacle → occupied (100) → unknown (-1) behind.
+    // At far depths a single ray spans multiple depth rows at the same fw_col; at near
+    // depths it can jump across fw_col values, which column-based scanning gets wrong.
+    msg.data.assign(rows * cols, -1);
 
-    for (auto i = 0; i < cols * rows; ++i)
+    // Derive horizontal FOV from depth camera intrinsics: tan(half_hfov) = (w/2) / fx
+    float tan_half_hfov = 0.0f;
+    const auto depth_info_it = _camera_info.find(DEPTH);
+    const bool has_fov = (depth_info_it != _camera_info.end() &&
+                          depth_info_it->second.k.at(0) > 0.0);
+    if (has_fov)
     {
-        // AICV algo packs 8 cells per byte; bit i%8 of byte i/8 = cell i.
-        if ((frame_as_uint8_arr[i / 8U] & (1U << i % 8)) != 0)
+        tan_half_hfov = (static_cast<float>(depth_info_it->second.width) * 0.5f)
+                        / static_cast<float>(depth_info_it->second.k.at(0));
+    }
+
+    const auto width = msg.info.width;
+
+    // Half-FOV in radians. When no intrinsics are available use the widest angle in
+    // the grid (nearest corner) so every in-grid cell is covered.
+    const float y_max = (static_cast<float>(cols / 2) - 0.5f) * cell_size;
+    const float x_near = 0.5f * cell_size;
+    const float half_fov_rad = has_fov
+        ? static_cast<float>(std::atan2(tan_half_hfov, 1.0f))
+        : static_cast<float>(std::atan2(y_max, x_near));
+    const float bin_range = 2.0f * half_fov_rad;
+
+    // Effective max range: firmware grid extent unless the user set occupancy_max_range.
+    const float x_far = (static_cast<float>(rows) - 0.5f) * cell_size;
+    const float max_range = (_occupancy_max_range > 0.0f) ? _occupancy_max_range : x_far;
+
+    // Number of angular bins: enough to give each cell at the farthest depth its own
+    // ray bucket — one cell width at x_far defines the finest angular step needed.
+    const int N_bins = std::max(cols,
+        static_cast<int>(std::ceil(x_far * bin_range / cell_size)) + 1);
+
+    // Per-bin occlusion state. Instead of separate ray lists, we scan row-by-row
+    // (nearest first) and maintain which angular bins are already blocked by a closer
+    // obstacle.  Occlusion is spread AFTER each row so same-depth cells don't shadow
+    // each other.  The spread width covers the physical angular footprint of one grid
+    // cell at the obstacle's depth, preventing "gap rays" from slipping between two
+    // adjacent occupied cells that fall in different bins.
+    std::vector<bool> bin_occluded(N_bins, false);
+    std::vector<std::pair<int,float>> pending;  // (bin, x_obs) for obstacles in current row
+
+    for (int fw_row = rows - 1; fw_row >= 0; --fw_row)
+    {
+        const float x = (static_cast<float>(rows - fw_row) - 0.5f) * cell_size;
+        if (x > max_range) continue; // beyond configured max range — leave as -1
+
+        pending.clear();
+
+        for (int fw_col = 0; fw_col < cols; ++fw_col)
         {
-            uint32_t fw_row = static_cast<uint32_t>(i / cols);
-            uint32_t fw_col = static_cast<uint32_t>(i % cols);
-            uint32_t og_col_idx = static_cast<uint32_t>(rows) - 1u - fw_row;
-            uint32_t og_row_idx = static_cast<uint32_t>(cols) - 1u - fw_col;
-            msg.data[og_row_idx * static_cast<uint32_t>(rows) + og_col_idx] = 100;
+            const float y = (static_cast<float>(cols / 2) -
+                             static_cast<float>(fw_col) - 0.5f) * cell_size;
+            if (has_fov && std::fabs(y) >= x * tan_half_hfov) continue; // outside FOV
+
+            const float theta = static_cast<float>(std::atan2(y, x));
+            const int bin = std::min(
+                static_cast<int>((theta + half_fov_rad) / bin_range * static_cast<float>(N_bins)),
+                N_bins - 1);
+            if (bin < 0) continue;
+
+            const int i = fw_row * cols + fw_col;
+            const uint32_t og_col_idx = width - 1u - static_cast<uint32_t>(fw_row);
+            const uint32_t og_row_idx = static_cast<uint32_t>(cols) - 1u - static_cast<uint32_t>(fw_col);
+            auto& cell_out = msg.data[og_row_idx * width + og_col_idx];
+
+            if ((frame_as_uint8_arr[i / 8U] & (1U << (i % 8U))) != 0)
+            {
+                cell_out = 100;
+                pending.emplace_back(bin, x); // spread shadow after full row is processed
+            }
+            else if (!bin_occluded[bin])
+            {
+                cell_out = 0; // clear line of sight
+            }
+            // else: leave as -1 (ray blocked by a closer obstacle)
+        }
+
+        // Spread occlusion from this row's obstacles into neighboring bins.
+        // n_spread = angular half-footprint of one cell / bin-width — ensures that a
+        // ray passing anywhere through the cell's solid extent is marked as blocked.
+        for (const auto& [obs_bin, x_obs] : pending)
+        {
+            const int n_spread = std::max(1, static_cast<int>(std::ceil(
+                cell_size * static_cast<float>(N_bins) / (2.0f * x_obs * bin_range))));
+            for (int b = std::max(0, obs_bin - n_spread);
+                     b <= std::min(N_bins - 1, obs_bin + n_spread); ++b)
+                bin_occluded[b] = true;
         }
     }
 

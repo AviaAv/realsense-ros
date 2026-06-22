@@ -350,6 +350,7 @@ namespace realsense2_camera
         std::string _json_file_path;
         float _depth_scale_meters;
         float _clipping_distance;
+        float _occupancy_max_range;
 
         double _linear_accel_cov;
         double _angular_velocity_cov;
