@@ -934,16 +934,12 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     msg.header.stamp = t;
     msg.header.frame_id = FRAME_ID(OCCUPANCY);
 
-    // Grid metadata — self-describing so subscribers need no out-of-band knowledge.
-    // Axes follow ROS convention (X: Forward, Y: Left):
-    //   width  = cells along X (forward) = rows in firmware
-    //   height = cells along Y (left)    = cols in firmware
-    // Origin is the world pose of cell (col=0, row=0), i.e. the nearest-range,
-    // rightmost-side corner of the grid:
-    //   origin.x = 0                                (nearest boundary, X direction)
-    //   origin.y = -resolution * (height - height/2)  (rightmost boundary, Y direction)
-    // Using (height - height/2) instead of height/2 keeps origin.y consistent with
-    // the integer-division used in og_row_idx for all column counts, including odd ones.
+    // Axes follow ROS convention (X: forward, Y: left):
+    //   width  = cells along X = firmware rows
+    //   height = cells along Y = firmware cols
+    // Origin is the corner of cell (0,0): nearest boundary in X, rightmost in Y.
+    // (cols - cols/2) instead of cols/2 keeps origin.y aligned with the integer
+    // division used in the cell coordinates below when cols is odd.
     msg.info.map_load_time = t;
     msg.info.resolution = cell_size;
     msg.info.width  = static_cast<uint32_t>(rows);
@@ -953,19 +949,15 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     msg.info.origin.position.z = 0.0;
     msg.info.origin.orientation.w = 1.0;
 
-    // data[row_idx * width + col_idx], 0 = free, 100 = occupied, -1 = unknown.
-    // col_idx increases in +X (forward), row_idx increases in +Y (left).
-    // Firmware row 0 = farthest  → col_idx = width-1-fw_row
-    // Firmware col 0 = leftmost  → row_idx = height-1-fw_col
-    //
-    // True angular raycasting: cells are grouped by ray angle θ = atan2(y, x).
-    // Within each ray, cells are processed nearest→farthest:
-    //   free (0) up to the first obstacle → occupied (100) → unknown (-1) behind.
-    // At far depths a single ray spans multiple depth rows at the same fw_col; at near
-    // depths it can jump across fw_col values, which column-based scanning gets wrong.
+    // data[row_idx * width + col_idx]: 0 = free, 100 = occupied, -1 = unknown.
+    // Firmware row 0 is the farthest row and col 0 the leftmost, so both
+    // indices are flipped when writing into the message.
+    // Cells are traced along rays grouped by angle (theta = atan2(y, x)),
+    // nearest to farthest: free until the first obstacle, occupied at it,
+    // unknown behind it.
     msg.data.assign(rows * cols, -1);
 
-    // Derive horizontal FOV from depth camera intrinsics: tan(half_hfov) = (w/2) / fx
+    // Horizontal FOV from depth intrinsics: tan(half_hfov) = (width/2) / fx
     float tan_half_hfov = 0.0f;
     const auto depth_info_it = _camera_info.find(DEPTH);
     const bool has_fov = (depth_info_it != _camera_info.end() &&
@@ -978,10 +970,9 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
 
     const auto width = msg.info.width;
 
-    // Half-FOV in radians. When no intrinsics are available use the widest angle in
-    // the grid (nearest corner) so every in-grid cell is covered.
-    // y_max uses (cols - cols/2) — the larger half for odd cols — to match the
-    // rightmost column's actual |y|, which is (cols - cols/2 - 0.5)*cell_size.
+    // Without intrinsics, fall back to the widest in-grid angle (nearest corner)
+    // so every cell is covered. y_max uses (cols - cols/2), the wider half when
+    // cols is odd.
     const float y_max = (static_cast<float>(cols - cols / 2) - 0.5f) * cell_size;
     const float x_near = 0.5f * cell_size;
     const float half_fov_rad = has_fov
@@ -989,37 +980,32 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
         : std::atan2(y_max, x_near);
     const float bin_range = 2.0f * half_fov_rad;
 
-    // Effective max range: firmware grid extent unless the user set occupancy_max_range.
+    // Full grid extent, unless limited by occupancy_max_range.
     const float x_far = (static_cast<float>(rows) - 0.5f) * cell_size;
     const float max_range = (_occupancy_max_range > 0.0f) ? _occupancy_max_range : x_far;
 
-    // Number of angular bins: enough to give each cell at the farthest depth its own
-    // ray bucket — one cell width at x_far defines the finest angular step needed.
+    // Enough angular bins to resolve one cell width at the farthest depth.
     const int N_bins = std::max(cols,
         static_cast<int>(std::ceil(x_far * bin_range / cell_size)) + 1);
 
-    // Per-bin occlusion state. Instead of separate ray lists, we scan row-by-row
-    // (nearest first) and maintain which angular bins are already blocked by a closer
-    // obstacle.  Occlusion is spread AFTER each row so same-depth cells don't shadow
-    // each other.  The spread width covers the physical angular footprint of one grid
-    // cell at the obstacle's depth, preventing "gap rays" from slipping between two
-    // adjacent occupied cells that fall in different bins.
-    // uint8_t instead of bool: avoids std::vector<bool>'s bit-packing proxy overhead
-    // on every random-access read/write in the hot inner loop.
+    // Rows are scanned nearest-first while bin_occluded tracks which rays are
+    // already blocked. Occlusion is applied only after a row completes, so cells
+    // at the same depth never shadow each other.
+    // uint8_t rather than bool to avoid vector<bool>'s bit-proxy overhead.
     std::vector<uint8_t> bin_occluded(N_bins, 0);
-    std::vector<std::pair<int,float>> pending;  // (bin, x_obs) for obstacles in current row
+    std::vector<std::pair<int,float>> pending;  // (bin, x) of this row's obstacles
     pending.reserve(cols);
 
     for (int fw_row = rows - 1; fw_row >= 0; --fw_row)
     {
         const float x = (static_cast<float>(rows - fw_row) - 0.5f) * cell_size;
-        if (x > max_range) continue; // beyond configured max range — leave as -1
+        if (x > max_range) continue; // beyond max range: leave unknown
 
         pending.clear();
 
         for (int fw_col = 0; fw_col < cols; ++fw_col)
         {
-            // Integer cols/2 is intentional — consistent with og_row_idx and origin.y.
+            // Integer cols/2, consistent with origin.y above.
             const float y = (static_cast<float>(cols / 2) -
                              static_cast<float>(fw_col) - 0.5f) * cell_size;
             if (has_fov && std::fabs(y) >= x * tan_half_hfov) continue; // outside FOV
@@ -1035,13 +1021,12 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
             const uint32_t og_row_idx = static_cast<uint32_t>(cols) - 1u - static_cast<uint32_t>(fw_col);
             auto& cell_out = msg.data[og_row_idx * width + og_col_idx];
 
-            // AICV firmware packs 8 cells per byte, LSB-first: bit (i%8) of byte (i/8)
-            // corresponds to cell i in row-major order (row 0 = farthest, col 0 = leftmost).
-            // Example: cells [0,0,1,1,0,0,1,0] → byte 0b01001100.
+            // Cells are bit-packed 8 per byte, LSB first: bit (i%8) of byte (i/8)
+            // is cell i in row-major order.
             if ((frame_as_uint8_arr[i / 8U] & (1U << (i % 8U))) != 0)
             {
                 cell_out = 100;
-                pending.emplace_back(bin, x); // spread shadow after full row is processed
+                pending.emplace_back(bin, x); // shadow is spread after the row completes
             }
             else if (!bin_occluded[bin])
             {
@@ -1050,13 +1035,11 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
             // else: leave as -1 (ray blocked by a closer obstacle)
         }
 
-        // Spread occlusion from this row's obstacles into neighboring bins.
-        // n_spread = angular half-footprint of one cell / bin-width — ensures that a
-        // ray passing anywhere through the cell's solid extent is marked as blocked.
-        // Skip spreading for obstacles in the nearest 2 rows (x_obs <= 2*cell_size):
-        // at very close range the formula gives n_spread >> N_bins (the cell subtends
-        // nearly the entire FOV), which would wrongly mark all farther cells as unknown
-        // from a single near glint or housing reflection.
+        // Each obstacle blocks its own bin plus the bins covered by the cell's
+        // physical width at its depth, so no ray can slip between two adjacent
+        // occupied cells. Obstacles in the nearest two rows are skipped: their
+        // footprint spans nearly the whole FOV, and a single noisy near hit
+        // would blank the entire grid.
         for (const auto& [obs_bin, x_obs] : pending)
         {
             if (x_obs <= 2.0f * cell_size)
