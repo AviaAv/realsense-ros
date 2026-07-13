@@ -925,6 +925,18 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
 
     ROS_DEBUG("Publishing Occupancy Grid Frame");
 
+    // Horizontal FOV from depth intrinsics: tan(half_hfov) = (width/2) / fx.
+    // The FOV mask and ray binning are meaningless without it - drop the frame
+    // rather than publish a grid built on incomplete information.
+    const auto depth_info_it = _camera_info.find(DEPTH);
+    if (depth_info_it == _camera_info.end() || depth_info_it->second.k.at(0) <= 0.0)
+    {
+        ROS_WARN("Occupancy grid not published: depth stream intrinsics are not available");
+        return;
+    }
+    const float tan_half_hfov = (static_cast<float>(depth_info_it->second.width) * 0.5f)
+                                / static_cast<float>(depth_info_it->second.k.at(0));
+
     auto frame_as_uint8_arr = (uint8_t*)f.get_data();
     auto cols = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_COLUMNS));
     auto rows = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_OCCUPANCY_GRID_ROWS));
@@ -957,27 +969,9 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     // unknown behind it.
     msg.data.assign(rows * cols, -1);
 
-    // Horizontal FOV from depth intrinsics: tan(half_hfov) = (width/2) / fx
-    float tan_half_hfov = 0.0f;
-    const auto depth_info_it = _camera_info.find(DEPTH);
-    const bool has_fov = (depth_info_it != _camera_info.end() &&
-                          depth_info_it->second.k.at(0) > 0.0);
-    if (has_fov)
-    {
-        tan_half_hfov = (static_cast<float>(depth_info_it->second.width) * 0.5f)
-                        / static_cast<float>(depth_info_it->second.k.at(0));
-    }
-
     const auto width = msg.info.width;
 
-    // Without intrinsics, fall back to the widest in-grid angle (nearest corner)
-    // so every cell is covered. y_max uses (cols - cols/2), the wider half when
-    // cols is odd.
-    const float y_max = (static_cast<float>(cols - cols / 2) - 0.5f) * cell_size;
-    const float x_near = 0.5f * cell_size;
-    const float half_fov_rad = has_fov
-        ? std::atan(tan_half_hfov)
-        : std::atan2(y_max, x_near);
+    const float half_fov_rad = std::atan(tan_half_hfov);
     const float bin_range = 2.0f * half_fov_rad;
 
     // Full grid extent, unless limited by occupancy_max_range.
@@ -1008,7 +1002,7 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
             // Integer cols/2, consistent with origin.y above.
             const float y = (static_cast<float>(cols / 2) -
                              static_cast<float>(fw_col) - 0.5f) * cell_size;
-            if (has_fov && std::fabs(y) >= x * tan_half_hfov) continue; // outside FOV
+            if (std::fabs(y) >= x * tan_half_hfov) continue; // outside FOV
 
             const float theta = std::atan2(y, x);
             const int bin = std::min(
