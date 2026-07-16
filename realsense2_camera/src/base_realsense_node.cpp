@@ -929,7 +929,8 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     // The FOV mask and ray binning are meaningless without it - drop the frame
     // rather than publish a grid built on incomplete information.
     const auto depth_info_it = _camera_info.find(DEPTH);
-    if (depth_info_it == _camera_info.end() || depth_info_it->second.k.at(0) <= 0.0)
+    if (depth_info_it == _camera_info.end() || depth_info_it->second.k.at(0) <= 0.0
+        || depth_info_it->second.width == 0)
     {
         ROS_WARN("Occupancy grid not published: depth stream intrinsics are not available");
         return;
@@ -950,14 +951,15 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     //   width  = cells along X = firmware rows
     //   height = cells along Y = firmware cols
     // Origin is the corner of cell (0,0): nearest boundary in X, rightmost in Y.
-    // (cols - cols/2) instead of cols/2 keeps origin.y aligned with the integer
-    // division used in the cell coordinates below when cols is odd.
+    // The grid is symmetric about the camera axis, so the right boundary is at
+    // y = -cols/2 cells regardless of parity; the per-cell y below uses the
+    // same convention.
     msg.info.map_load_time = t;
     msg.info.resolution = cell_size;
     msg.info.width  = static_cast<uint32_t>(rows);
     msg.info.height = static_cast<uint32_t>(cols);
     msg.info.origin.position.x = 0.0;
-    msg.info.origin.position.y = -cell_size * static_cast<float>(cols - cols / 2);
+    msg.info.origin.position.y = -cell_size * static_cast<float>(cols) * 0.5f;
     msg.info.origin.position.z = 0.0;
     msg.info.origin.orientation.w = 1.0;
 
@@ -972,7 +974,7 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     const auto width = msg.info.width;
 
     const float half_fov_rad = std::atan(tan_half_hfov);
-    const float bin_range = 2.0f * half_fov_rad;
+    const float fov_span = 2.0f * half_fov_rad; // total angular window covered by the bins
 
     // Full grid extent, unless limited by occupancy_max_range.
     const float x_far = (static_cast<float>(rows) - 0.5f) * cell_size;
@@ -980,7 +982,7 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
 
     // Enough angular bins to resolve one cell width at the farthest depth.
     const int N_bins = std::max(cols,
-        static_cast<int>(std::ceil(x_far * bin_range / cell_size)) + 1);
+        static_cast<int>(std::ceil(x_far * fov_span / cell_size)) + 1);
 
     // Rows are scanned nearest-first while bin_occluded tracks which rays are
     // already blocked. Occlusion is applied only after a row completes, so cells
@@ -993,22 +995,25 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
     for (int fw_row = rows - 1; fw_row >= 0; --fw_row)
     {
         const float x = (static_cast<float>(rows - fw_row) - 0.5f) * cell_size;
-        if (x > max_range) continue; // beyond max range: leave unknown
+        // Rows are scanned nearest-first, so past max_range every remaining row
+        // is also beyond it: stop, leaving them unknown.
+        if (x > max_range) break;
 
         pending.clear();
 
         for (int fw_col = 0; fw_col < cols; ++fw_col)
         {
-            // Integer cols/2, consistent with origin.y above.
-            const float y = (static_cast<float>(cols / 2) -
+            // Symmetric about the camera axis, consistent with origin.y above.
+            const float y = (static_cast<float>(cols) * 0.5f -
                              static_cast<float>(fw_col) - 0.5f) * cell_size;
             if (std::fabs(y) >= x * tan_half_hfov) continue; // outside FOV
 
             const float theta = std::atan2(y, x);
+            // The FOV mask above guarantees |theta| < half_fov_rad, so bin is
+            // non-negative; min() clamps the +edge (normalized == 1.0) only.
             const int bin = std::min(
-                static_cast<int>((theta + half_fov_rad) / bin_range * static_cast<float>(N_bins)),
+                static_cast<int>((theta + half_fov_rad) / fov_span * static_cast<float>(N_bins)),
                 N_bins - 1);
-            if (bin < 0) continue;
 
             const int i = fw_row * cols + fw_col;
             const uint32_t og_col_idx = width - 1u - static_cast<uint32_t>(fw_row);
@@ -1039,7 +1044,7 @@ void BaseRealSenseNode::publishOccupancyFrame(rs2::frame f, const rclcpp::Time& 
             if (x_obs <= 2.0f * cell_size)
                 continue;
             const int n_spread = std::max(1, static_cast<int>(std::ceil(
-                cell_size * static_cast<float>(N_bins) / (2.0f * x_obs * bin_range))));
+                cell_size * static_cast<float>(N_bins) / (2.0f * x_obs * fov_span))));
             for (int b = std::max(0, obs_bin - n_spread);
                      b <= std::min(N_bins - 1, obs_bin + n_spread); ++b)
                 bin_occluded[b] = 1;
