@@ -2,8 +2,8 @@
 Changelog for package realsense2_description
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+4.58.3 (2026-07-20)
+-------------------
 * Push 4.58.3 release into ros2-master (`#3540 <https://github.com/IntelRealSense/realsense-ros/issues/3540>`_)
 * Update package.xml to version 4.58.3
 * Merge master into ros2-development (4.58.2 release sync) (`#3529 <https://github.com/IntelRealSense/realsense-ros/issues/3529>`_)

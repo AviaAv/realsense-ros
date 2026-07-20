@@ -2,8 +2,8 @@
 Changelog for package realsense2_camera
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+4.58.3 (2026-07-20)
+-------------------
 * Push 4.58.3 release into ros2-master (`#3540 <https://github.com/IntelRealSense/realsense-ros/issues/3540>`_)
 * Fix image_transport::create_publisher for ROS2 Rolling (`#3541 <https://github.com/IntelRealSense/realsense-ros/issues/3541>`_)
 * Update package.xml  to version 4.58.3
