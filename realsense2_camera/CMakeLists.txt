@@ -222,7 +222,8 @@ elseif("$ENV{ROS_DISTRO}" STREQUAL "lyrical")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DLYRICAL")
   set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 else()
-  message(FATAL_ERROR "Unsupported ROS Distribution: " "$ENV{ROS_DISTRO}")
+  message(WARNING "Unsupported ROS Distribution: " "$ENV{ROS_DISTRO}")
+  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 endif()
 
 # The header 'cv_bridge/cv_bridge.hpp' was added in version 3.3.0. For older
