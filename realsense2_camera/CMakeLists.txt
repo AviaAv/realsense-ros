@@ -328,7 +328,7 @@ if(USE_LIFECYCLE_NODE)
         rclcpp_lifecycle::rclcpp_lifecycle
         lifecycle_msgs::lifecycle_msgs__rosidl_typesupport_cpp)
     add_definitions(-DUSE_LIFECYCLE_NODE)
-    message("🚀 USE_LIFECYCLE_NODE is ENABLED")
+    message(STATUS "USE_LIFECYCLE_NODE is ENABLED")
 
     # Create a configuration file for the launch file
     file(WRITE "${CMAKE_BINARY_DIR}/global_settings.yaml"
