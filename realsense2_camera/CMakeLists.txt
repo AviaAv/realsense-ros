@@ -184,6 +184,7 @@ set(SOURCES
     src/tfs.cpp
     src/actions.cpp
     src/safety.cpp
+    src/ros_param_backend.cpp
   )
 
 if (BUILD_ACCELERATE_GPU_WITH_GLSL)
@@ -196,34 +197,26 @@ endif()
 if("$ENV{ROS_DISTRO}" STREQUAL "foxy")
   message(STATUS "Build for ROS2 Foxy")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFOXY")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "humble")
   message(STATUS "Build for ROS2 Humble")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHUMBLE")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "iron")
   message(STATUS "Build for ROS2 Iron")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DIRON")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "rolling")
   message(STATUS "Build for ROS2 Rolling")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DROLLING")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "jazzy")
   message(STATUS "Build for ROS2 Jazzy")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DJAZZY")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "kilted")
   message(STATUS "Build for ROS2 Kilted")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DKILTED")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 elseif("$ENV{ROS_DISTRO}" STREQUAL "lyrical")
   message(STATUS "Build for ROS2 Lyrical")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DLYRICAL")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 else()
   message(WARNING "Unsupported ROS Distribution: " "$ENV{ROS_DISTRO}")
-  set(SOURCES "${SOURCES}" src/ros_param_backend.cpp)
 endif()
 
 # The header 'cv_bridge/cv_bridge.hpp' was added in version 3.3.0. For older
