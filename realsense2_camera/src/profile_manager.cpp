@@ -133,9 +133,20 @@ std::map<stream_index_pair, rs2::stream_profile> ProfilesManager::getDefaultProf
 
     if (sip_default_profiles.empty())
     {
-        ROS_INFO_STREAM("No default profile found. Setting the first available profile as the default one.");
-        rs2::stream_profile first_profile = _all_profiles.front();
-        sip_default_profiles[{first_profile.stream_type(), first_profile.stream_index()}] = first_profile;
+        ROS_INFO_STREAM("No default profile found. Using the lowest frame rate that all the streams offer.");
+        std::map<int, std::map<stream_index_pair, rs2::stream_profile>> profiles_per_fps;
+        for (auto profile : _all_profiles)
+        {
+            stream_index_pair sip(profile.stream_type(), profile.stream_index());
+            profiles_per_fps[profile.fps()].emplace(sip, profile);
+        }
+
+        // One rate for all the streams - some sensors cannot stream theirs at different ones.
+        for (auto& fps_profiles : profiles_per_fps)
+        {
+            if (fps_profiles.second.size() > sip_default_profiles.size())
+                sip_default_profiles = fps_profiles.second;
+        }
     }
 
     return sip_default_profiles;
