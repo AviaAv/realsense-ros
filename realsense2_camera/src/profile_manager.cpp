@@ -133,7 +133,7 @@ std::map<stream_index_pair, rs2::stream_profile> ProfilesManager::getDefaultProf
 
     if (sip_default_profiles.empty())
     {
-        ROS_INFO_STREAM("No default profile found. Using the lowest frame rate that all the streams offer.");
+        ROS_INFO_STREAM("No default profile found. Using the lowest frame rate shared by the most streams.");
         std::map<int, std::map<stream_index_pair, rs2::stream_profile>> profiles_per_fps;
         for (auto profile : _all_profiles)
         {
