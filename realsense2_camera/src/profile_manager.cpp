@@ -606,7 +606,8 @@ std::map<stream_index_pair, rs2::stream_profile> MotionProfilesManager::getFallb
             fallback_profiles = fps_profiles.second;
     }
 
-    ROS_INFO_STREAM("No default profile found. Using the lowest frame rate shared by the most streams.");
+    ROS_INFO_STREAM("No default profile found. Using the lowest frame rate shared by the most streams: "
+                    << fallback_profiles.begin()->second.fps());
     if (fallback_profiles.size() < all_sips.size())
         ROS_WARN_STREAM("No frame rate is shared by all the motion streams, "
                         << (all_sips.size() - fallback_profiles.size()) << " of them keep their own.");
